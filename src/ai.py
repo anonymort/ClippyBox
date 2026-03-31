@@ -54,11 +54,20 @@ client = Anthropic()
 # System prompt
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = (
-    "You explain screenshots. Be extremely concise: 2-4 sentences max. "
-    "Lead with the single most important insight. No bullet points unless asked. "
-    "For code or errors include a one-line fix. Answer follow-ups just as briefly."
-)
+def _load_system_prompt() -> str:
+    """
+    Load the system prompt from src/system_prompt.txt.
+
+    Keeping the prompt in a plain text file makes it easy to customise
+    without touching any Python code. The file is resolved relative to
+    this module so it works regardless of where main.py is invoked from.
+    """
+    prompt_path = os.path.join(os.path.dirname(__file__), "system_prompt.txt")
+    with open(prompt_path, encoding="utf-8") as f:
+        return f.read().strip()
+
+
+SYSTEM_PROMPT = _load_system_prompt()
 
 
 # ---------------------------------------------------------------------------
