@@ -1,0 +1,5 @@
+anthropic>=0.25.0
+Pillow>=10.0.0
+pynput>=1.7.6
+pyobjc-framework-Cocoa>=10.0
+pyobjc-framework-Quartz>=10.0
