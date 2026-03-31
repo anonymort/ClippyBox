@@ -1,5 +1,7 @@
 # ClippyBox
 
+<video src="https://github.com/user-attachments/assets/65a4884c-1b71-4f41-8040-f11def6c3b34" autoplay loop muted playsinline width="700"></video>
+
 > Press ⌘⇧E, draw a box around anything on your screen, get an instant AI explanation.
 
 Works everywhere — your IDE, browser, terminal, PDF viewer, Figma, anywhere. No copy-pasting, no context switching, no prompt writing.
