@@ -17,13 +17,14 @@ Threading model:
   Results are posted back to the tkinter main thread via root.after(0, ...).
 """
 
+import re
 import threading
 import tkinter as tk
 from tkinter import scrolledtext
 
 from PIL import Image, ImageTk
 
-import ai
+from . import ai
 
 
 # ---------------------------------------------------------------------------
@@ -143,12 +144,21 @@ class ResultPanel:
         self.chat.configure(height=18)  # ~18 lines visible minimum
 
         # Named text tags for styled runs within the chat widget
-        self.chat.tag_configure("you_label", foreground=TEXT_YOU, font=FONT_LABEL)
-        self.chat.tag_configure("ai_label",  foreground=TEXT_AI,  font=FONT_LABEL)
-        self.chat.tag_configure("you_body",  foreground=TEXT,      font=FONT_INPUT)
-        self.chat.tag_configure("ai_body",   foreground=TEXT,      font=FONT_BODY)
-        self.chat.tag_configure("thinking",  foreground=TEXT_DIM,  font=("Helvetica Neue", 13, "italic"))
-        self.chat.tag_configure("code",      foreground="#b8d4b8", font=FONT_MONO,
+        self.chat.tag_configure("you_label",   foreground=TEXT_YOU, font=FONT_LABEL)
+        self.chat.tag_configure("ai_label",    foreground=TEXT_AI,  font=FONT_LABEL)
+        self.chat.tag_configure("you_body",    foreground=TEXT,      font=FONT_INPUT)
+        self.chat.tag_configure("ai_body",     foreground=TEXT,      font=FONT_BODY)
+        self.chat.tag_configure("thinking",    foreground=TEXT_DIM,  font=("Helvetica Neue", 13, "italic"))
+        self.chat.tag_configure("code",        foreground="#b8d4b8", font=FONT_MONO,
+                                background="#1a1f1a")
+        # Markdown formatting tags
+        self.chat.tag_configure("h1",          foreground=TEXT,      font=("Helvetica Neue", 22, "bold"))
+        self.chat.tag_configure("h2",          foreground=TEXT,      font=("Helvetica Neue", 18, "bold"))
+        self.chat.tag_configure("h3",          foreground=TEXT,      font=("Helvetica Neue", 15, "bold"))
+        self.chat.tag_configure("bold",        foreground=TEXT,      font=("Georgia", 20, "bold"))
+        self.chat.tag_configure("italic",      foreground=TEXT,      font=("Georgia", 20, "italic"))
+        self.chat.tag_configure("bold_italic", foreground=TEXT,      font=("Georgia", 20, "bold", "italic"))
+        self.chat.tag_configure("code_inline", foreground="#b8d4b8", font=FONT_MONO,
                                 background="#1a1f1a")
 
         tk.Frame(self.win, bg=BORDER, height=1).pack(fill=tk.X)
@@ -296,13 +306,14 @@ class ResultPanel:
 
     def _replace_thinking(self, new_text: str) -> None:
         """
-        Replace the "Thinking…" or "Analyzing…" placeholder with the real response.
+        Replace the "Thinking…" or "Analyzing…" placeholder with the real response,
+        rendered with markdown formatting.
 
-        Searches backwards through the chat content for the placeholder string
-        and replaces it in-place, preserving surrounding text and formatting.
+        Searches backwards for the placeholder and deletes from that point to end,
+        then inserts the markdown-formatted response.
 
         Args:
-            new_text: The response text to substitute in.
+            new_text: The markdown response text to substitute in.
         """
         self.chat.configure(state=tk.NORMAL)
         content = self.chat.get("1.0", tk.END)
@@ -311,18 +322,101 @@ class ResultPanel:
             idx = content.rfind(placeholder)
             if idx == -1:
                 continue
-            # Convert flat char index → tkinter "line.col" index
             line = content[:idx].count("\n") + 1
             col  = idx - content[:idx].rfind("\n") - 1
-            self.chat.delete(f"{line}.{col}", f"{line}.{col + len(placeholder)}")
-            self.chat.insert(f"{line}.{col}", new_text, "ai_body")
+            # Delete from placeholder position to end, then insert markdown
+            self.chat.delete(f"{line}.{col}", tk.END)
+            self._insert_markdown(new_text)
             break
         else:
-            # Placeholder not found — just append
-            self.chat.insert(tk.END, new_text, "ai_body")
+            self._insert_markdown(new_text)
 
         self.chat.configure(state=tk.DISABLED)
         self.chat.see(tk.END)
+
+    def _insert_markdown(self, text: str) -> None:
+        """
+        Insert markdown-formatted text into the chat widget.
+
+        Handles: headers (h1–h3), fenced code blocks, bullet and numbered lists,
+        and inline formatting (**bold**, *italic*, ***bold italic***, `code`).
+
+        Assumes the chat widget is already in NORMAL (editable) state.
+
+        Args:
+            text: Markdown string to render.
+        """
+        lines = text.split("\n")
+        in_code_block = False
+        code_lines: list[str] = []
+
+        for line in lines:
+            # --- Fenced code blocks ---
+            if line.startswith("```"):
+                if not in_code_block:
+                    in_code_block = True
+                    code_lines = []
+                else:
+                    in_code_block = False
+                    self.chat.insert(tk.END, "\n".join(code_lines) + "\n", "code")
+                continue
+
+            if in_code_block:
+                code_lines.append(line)
+                continue
+
+            # --- Block-level elements ---
+            if line.startswith("### "):
+                self._insert_inline(line[4:], "h3")
+                self.chat.insert(tk.END, "\n")
+            elif line.startswith("## "):
+                self._insert_inline(line[3:], "h2")
+                self.chat.insert(tk.END, "\n")
+            elif line.startswith("# "):
+                self._insert_inline(line[2:], "h1")
+                self.chat.insert(tk.END, "\n")
+            elif re.match(r"^[-*]\s", line):
+                self.chat.insert(tk.END, "  • ", "ai_body")
+                self._insert_inline(line[2:], "ai_body")
+                self.chat.insert(tk.END, "\n")
+            elif re.match(r"^\d+\.\s", line):
+                m = re.match(r"^(\d+\.\s)", line)
+                self.chat.insert(tk.END, "  " + m.group(1), "ai_body")
+                self._insert_inline(line[m.end():], "ai_body")
+                self.chat.insert(tk.END, "\n")
+            elif line == "":
+                self.chat.insert(tk.END, "\n")
+            else:
+                self._insert_inline(line, "ai_body")
+                self.chat.insert(tk.END, "\n")
+
+    def _insert_inline(self, text: str, base_tag: str) -> None:
+        """
+        Insert a single line of text with inline markdown formatting applied.
+
+        Recognises ***bold italic***, **bold**, *italic*, and `inline code`.
+        Unstyled spans use base_tag.
+
+        Assumes the chat widget is already in NORMAL state.
+
+        Args:
+            text:     The line content (no leading block markers).
+            base_tag: Tag to apply to plain text spans.
+        """
+        pattern = r"(\*\*\*[^*]+?\*\*\*|\*\*[^*]+?\*\*|\*[^*]+?\*|`[^`]+?`)"
+        for part in re.split(pattern, text):
+            if not part:
+                continue
+            if part.startswith("***") and part.endswith("***"):
+                self.chat.insert(tk.END, part[3:-3], "bold_italic")
+            elif part.startswith("**") and part.endswith("**"):
+                self.chat.insert(tk.END, part[2:-2], "bold")
+            elif part.startswith("*") and part.endswith("*") and len(part) > 2:
+                self.chat.insert(tk.END, part[1:-1], "italic")
+            elif part.startswith("`") and part.endswith("`") and len(part) > 2:
+                self.chat.insert(tk.END, part[1:-1], "code_inline")
+            else:
+                self.chat.insert(tk.END, part, base_tag)
 
     def _clear_chat(self) -> None:
         """Delete all content from the chat widget."""

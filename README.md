@@ -6,64 +6,34 @@
 
 Works everywhere — your IDE, browser, terminal, PDF viewer, Figma, anywhere. No copy-pasting, no context switching, no prompt writing.
 
-**Requires macOS and an Anthropic API key.**
+**Requires macOS and Ollama.**
 
 ---
 
 ## Install
 
-### 1. Clone the repo
+```bash
+brew tap shaier/clippybox
+brew install clippybox
+clippybox
+```
+
+First install may take a few minutes while pyobjc dependencies compile.
+First launch will prompt you to download a vision model if one isn't available locally.
+
+<details>
+<summary>Developer install (from source)</summary>
 
 ```bash
 git clone https://github.com/shaier/clippybox
 cd clippybox
-```
-
-### 2. Install uv (recommended)
-
-uv is a fast Python package manager. Skip this step if you already have it.
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-Restart your terminal after installing so the `uv` command is available.
-
-### 3. Create a virtual environment and install dependencies
-
-**With uv:**
-```bash
 uv venv
 source .venv/bin/activate
-uv pip install -r requirements.txt
+uv pip install -e .
+python -m clippybox
 ```
 
-**With pip:**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 4. Get an Anthropic API key
-
-1. Go to [console.anthropic.com](https://console.anthropic.com) and sign up or log in
-2. Navigate to **API Keys** and click **Create Key**
-3. Go to **Billing** and add credits (a few dollars is plenty for extensive use)
-
-Theres an `.env` file in the project root. Replace `sk-ant-...` with your actual key. No quotes needed around the value.
-
-### 5. Run
-
-```bash
-python main.py
-```
-
-You should see:
-```
-ClippyBox is running.
-Press Cmd+Shift+E to capture any region of your screen.
-```
+</details>
 
 ---
 
@@ -98,14 +68,14 @@ After granting either permission, quit and restart ClippyBox.
 ```
 ⌘⇧E pressed anywhere
   └─ pynput global hotkey listener (background thread)
-       └─ src/overlay_process.py launched as subprocess
+       └─ src/clippybox/overlay_process.py launched as subprocess
             └─ screencapture takes a screenshot (before overlay appears)
             └─ PyObjC renders a borderless fullscreen overlay
             └─ user draws a selection box
             └─ selection is cropped and saved to a temp PNG file
-       └─ main.py reads the temp file
-            └─ src/ai.py sends image to Claude Vision API
-            └─ src/panel.py displays the response (tkinter)
+       └─ src/clippybox/__main__.py reads the temp file
+            └─ src/clippybox/ai.py sends image to local vision model via Ollama
+            └─ src/clippybox/panel.py displays the response (tkinter)
             └─ follow-up questions re-send image + conversation history
 ```
 
@@ -120,15 +90,51 @@ separate process sidesteps this conflict entirely — the two never share a thre
 
 ```
 clippybox/
-├── main.py                  # Entry point — hotkey listener + app wiring
+├── pyproject.toml           # Project metadata and entry point
 ├── requirements.txt         # Python dependencies
-├── pyproject.toml           # Project metadata (for uv / pip)
-├── .env                     # Your API key (never commit this)
+├── .env.example             # Config template — copy to ~/.config/clippybox/.env
 └── src/
-    ├── __init__.py
-    ├── ai.py                # Claude API calls + conversation history
-    ├── overlay_process.py   # macOS selection overlay (PyObjC subprocess)
-    └── panel.py             # Result panel UI (tkinter)
+    └── clippybox/
+        ├── __init__.py
+        ├── __main__.py      # Entry point — hotkey listener + app wiring
+        ├── preflight.py     # First-run Ollama and model checks
+        ├── ai.py            # Ollama API calls + conversation history
+        ├── overlay_process.py  # macOS selection overlay (PyObjC subprocess)
+        ├── panel.py         # Result panel UI (tkinter)
+        └── data/
+            └── system_prompt.txt
+```
+
+---
+
+## Configuration
+
+ClippyBox reads config from (first match wins):
+
+1. Real environment variables
+2. `~/.config/clippybox/.env`
+3. `./.env` in the current working directory
+
+Copy `.env.example` to get started:
+
+```bash
+mkdir -p ~/.config/clippybox
+cp .env.example ~/.config/clippybox/.env
+```
+
+| Variable          | Default                          | Description                                      |
+|-------------------|----------------------------------|--------------------------------------------------|
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1`      | Ollama (or any OpenAI-compatible) endpoint       |
+| `MODEL`           | `llava`                          | Vision model to use (must be pulled in Ollama)   |
+| `MAX_TOKENS`      | `1024`                           | Maximum response length                          |
+| `API_KEY`         | `ollama`                         | API key — only needed for hosted endpoints       |
+
+To use a different model:
+
+```bash
+ollama pull llava:13b
+# In ~/.config/clippybox/.env:
+MODEL=llava:13b
 ```
 
 ---
@@ -141,8 +147,14 @@ clippybox/
 **The overlay is black / I can't see my screen**
 → Grant Screen Recording permission (see above).
 
-**`API key` or authentication error**
-→ Open `.env` and confirm your key starts with `sk-ant-` with no surrounding quotes or extra characters.
+**"Ollama is not installed"**
+→ Install Ollama: `brew install ollama` or download from [ollama.com](https://ollama.com).
+
+**"Ollama is installed but not running"**
+→ Start Ollama: run `ollama serve` in a separate terminal, or open the Ollama app.
+
+**"Model is not downloaded"**
+→ Pull the model: `ollama pull llava`. ClippyBox will also offer to do this automatically on first run.
 
 **The panel doesn't appear after drawing a box**
 → Make sure you draw a selection larger than ~10×10px. Tiny accidental clicks are ignored.
