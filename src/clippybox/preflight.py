@@ -57,16 +57,32 @@ def run() -> None:
         print("Then relaunch ClippyBox.")
         sys.exit(1)
 
-    # Check 2: Is Ollama running?
+    # Check 2: Is Ollama running? Start it automatically if not.
     api_base = _ollama_api_url(base_url)
     try:
         urllib.request.urlopen(f"{api_base}/api/tags", timeout=3)
     except Exception:
-        print("Ollama is installed but not running.\n")
-        print("Start it with:")
-        print("  ollama serve\n")
-        print("Or open the Ollama app, then relaunch ClippyBox.")
-        sys.exit(1)
+        print("Starting Ollama...")
+        subprocess.Popen(
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # Wait up to 15 seconds for it to become ready
+        import time
+        for _ in range(30):
+            time.sleep(0.5)
+            try:
+                urllib.request.urlopen(f"{api_base}/api/tags", timeout=2)
+                break
+            except Exception:
+                continue
+        else:
+            print("Ollama did not start in time.\n")
+            print("Try starting it manually:")
+            print("  ollama serve\n")
+            print("Then relaunch ClippyBox.")
+            sys.exit(1)
 
     # Check 3: Is the configured model available?
     try:

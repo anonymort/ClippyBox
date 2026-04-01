@@ -18,7 +18,7 @@ curl -sSL https://raw.githubusercontent.com/anonymort/ClippyBox/main/install.sh 
 
 This creates an isolated environment at `~/.local/share/clippybox/` and adds a `clippybox` command to `~/.local/bin/`.
 
-First launch will prompt you to download a vision model if one isn't available locally.
+On first launch, ClippyBox will auto-start Ollama if it isn't running and prompt you to download a vision model if one isn't available locally.
 
 <details>
 <summary>Developer install (from source)</summary>
@@ -158,8 +158,8 @@ MODEL=llava:13b
 **"Ollama is not installed"**
 → Install Ollama: `brew install ollama` or download from [ollama.com](https://ollama.com).
 
-**"Ollama is installed but not running"**
-→ Start Ollama: run `ollama serve` in a separate terminal, or open the Ollama app.
+**"Ollama did not start in time"**
+→ ClippyBox auto-starts Ollama, but if it fails, run `ollama serve` in a separate terminal or open the Ollama app.
 
 **"Model is not downloaded"**
 → Pull the model: `ollama pull llava`. ClippyBox will also offer to do this automatically on first run.
