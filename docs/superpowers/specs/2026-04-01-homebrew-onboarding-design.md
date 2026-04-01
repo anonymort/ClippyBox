@@ -235,8 +235,8 @@ class Clippybox < Formula
   include Language::Python::Virtualenv
 
   desc "Point at anything on your screen and instantly understand it"
-  homepage "https://github.com/shaier/clippybox"
-  url "https://github.com/shaier/clippybox/archive/refs/tags/v0.1.0.tar.gz"
+  homepage "https://github.com/anonymort/clippybox"
+  url "https://github.com/anonymort/clippybox/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "..."
 
   depends_on :macos
@@ -271,7 +271,7 @@ Design notes:
 ### User experience
 
 ```bash
-brew tap shaier/clippybox
+brew tap anonymort/clippybox
 brew install clippybox    # installs Python, tkinter, deps, clippybox
 clippybox                 # first run: preflight prompts for model download
 ```
@@ -286,7 +286,7 @@ clippybox                 # first run: preflight prompts for model download
 ## Install
 
 ```bash
-brew tap shaier/clippybox
+brew tap anonymort/clippybox
 brew install clippybox
 clippybox
 ```
@@ -332,7 +332,7 @@ python -m clippybox
 ## User journey (end-to-end)
 
 ```
-$ brew tap shaier/clippybox
+$ brew tap anonymort/clippybox
 $ brew install clippybox
   ==> Installing clippybox ...
   ==> Pouring python@3.12, python-tk@3.12 ...

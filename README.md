@@ -13,7 +13,7 @@ Works everywhere — your IDE, browser, terminal, PDF viewer, Figma, anywhere. N
 ## Install
 
 ```bash
-brew tap shaier/clippybox
+brew tap anonymort/clippybox
 brew install clippybox
 clippybox
 ```
@@ -25,7 +25,7 @@ First launch will prompt you to download a vision model if one isn't available l
 <summary>Developer install (from source)</summary>
 
 ```bash
-git clone https://github.com/shaier/clippybox
+git clone https://github.com/anonymort/clippybox
 cd clippybox
 uv venv
 source .venv/bin/activate

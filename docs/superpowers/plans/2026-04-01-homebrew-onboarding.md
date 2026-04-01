@@ -526,7 +526,7 @@ echo ".env" >> .gitignore
 - [ ] **Step 2: Rewrite `README.md`**
 
 Key changes:
-- Primary install: `brew tap shaier/clippybox && brew install clippybox && clippybox`
+- Primary install: `brew tap anonymort/clippybox && brew install clippybox && clippybox`
 - Developer install in collapsed `<details>` block: clone, venv, `python -m clippybox`
 - Remove all Anthropic API references
 - "How it works" diagram: "Claude Vision API" → "local vision model (Ollama)"
@@ -561,8 +561,8 @@ class Clippybox < Formula
   include Language::Python::Virtualenv
 
   desc "Point at anything on your screen and instantly understand it"
-  homepage "https://github.com/shaier/clippybox"
-  url "https://github.com/shaier/clippybox/archive/refs/tags/v0.1.0.tar.gz"
+  homepage "https://github.com/anonymort/clippybox"
+  url "https://github.com/anonymort/clippybox/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "UPDATE_AFTER_RELEASE"
 
   depends_on :macos
