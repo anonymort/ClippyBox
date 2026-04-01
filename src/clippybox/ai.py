@@ -1,9 +1,8 @@
 """
 src/clippybox/ai.py - AI backend integration (Ollama / OpenAI-compatible).
 
-Uses the OpenAI Python library pointed at a local Ollama instance by default,
-so any open-source vision model (llava, moondream, minicpm-v, …) can be used
-without an API key or cloud dependency.
+Calls the OpenAI-compatible chat completions endpoint using stdlib only
+(urllib.request + json). No third-party HTTP or SDK dependencies needed.
 
 Configuration (via .env or environment variables):
   OLLAMA_BASE_URL   Base URL for the OpenAI-compatible endpoint.
@@ -19,9 +18,9 @@ Conversation model:
 
 import base64
 import io
+import json
 import os
-
-from openai import OpenAI
+import urllib.request
 
 
 # ---------------------------------------------------------------------------
@@ -63,18 +62,7 @@ _load_dotenv()
 _base_url   = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 _model      = os.environ.get("MODEL", "llava")
 _max_tokens = int(os.environ.get("MAX_TOKENS", "1024"))
-
-_client: OpenAI | None = None
-
-
-def _get_client() -> OpenAI:
-    global _client
-    if _client is None:
-        # api_key must be non-empty for the OpenAI client; Ollama ignores the value.
-        # Real keys are needed for hosted OpenAI-compatible endpoints (LM Studio, vLLM, etc).
-        api_key = os.environ.get("API_KEY") or "ollama"
-        _client = OpenAI(base_url=_base_url, api_key=api_key)
-    return _client
+_api_key    = os.environ.get("API_KEY") or "ollama"
 
 
 # ---------------------------------------------------------------------------
@@ -119,12 +107,6 @@ def _build_text_message(text: str) -> dict:
 
     Used to store conversation turns in history without duplicating the base64
     image payload, which would overflow local model context on follow-ups.
-
-    Args:
-        text: The user's message text.
-
-    Returns:
-        A dict in the OpenAI messages API format.
     """
     return {"role": "user", "content": text}
 
@@ -132,13 +114,6 @@ def _build_text_message(text: str) -> dict:
 def _build_image_message(image, text: str) -> dict:
     """
     Build an OpenAI-format user message containing an image and a text prompt.
-
-    Args:
-        image: A PIL.Image.Image instance to include in the message.
-        text:  The accompanying text prompt.
-
-    Returns:
-        A dict in the OpenAI messages API format.
     """
     return {
         "role": "user",
@@ -157,24 +132,29 @@ def _build_image_message(image, text: str) -> dict:
 
 def _call_api(messages: list) -> str:
     """
-    Send a list of messages to the configured model and return the response.
+    POST to the chat completions endpoint and return the response text.
 
-    Args:
-        messages: Full conversation history in OpenAI messages API format.
-
-    Returns:
-        The assistant's response as a plain string.
-
-    Raises:
-        openai.OpenAIError: On any API-level error.
+    Uses urllib.request (stdlib) — no third-party HTTP library needed.
     """
-    response = _get_client().chat.completions.create(
-        model=_model,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
-        max_tokens=_max_tokens,
+    payload = json.dumps({
+        "model": _model,
+        "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+        "max_tokens": _max_tokens,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        f"{_base_url}/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {_api_key}",
+        },
     )
-    content = response.choices[0].message.content
-    # Some models return None content (e.g. on refusal or backend quirk).
+
+    with urllib.request.urlopen(req) as resp:
+        data = json.loads(resp.read())
+
+    content = data["choices"][0]["message"]["content"]
     if content is None:
         return "(No response from model)"
     return content
@@ -215,21 +195,11 @@ def ask_followup(image, question: str, history: list) -> tuple[str, list]:
     The image is included only in the current turn so the model has full visual
     context without duplicating the base64 payload across every history entry.
     History is stored as text-only to stay within local model context limits.
-
-    Args:
-        image:    PIL.Image.Image — the original captured region.
-        question: The user's follow-up question as a plain string.
-        history:  The conversation history returned by the previous call.
-
-    Returns:
-        A (response_text, updated_history) tuple.
     """
-    # Send the image with the current question, but keep history image-free.
     api_message = _build_image_message(image, question)
     messages = history + [api_message]
     response_text = _call_api(messages)
 
-    # Store text-only for this turn so future calls don't accumulate images.
     updated_history = history + [
         _build_text_message(question),
         {"role": "assistant", "content": response_text},
