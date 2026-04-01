@@ -93,7 +93,11 @@ def main() -> None:
     global _tk_root
 
     if "--version" in sys.argv:
-        print("ClippyBox 0.1.0")
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            print(f"ClippyBox {version('clippybox')}")
+        except PackageNotFoundError:
+            print("ClippyBox (dev)")
         return
 
     if "--help" in sys.argv or "-h" in sys.argv:

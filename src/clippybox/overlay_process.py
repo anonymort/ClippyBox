@@ -1,8 +1,8 @@
 """
-src/overlay_process.py - macOS screen region selection overlay.
+src/clippybox/overlay_process.py - macOS screen region selection overlay.
 
 This script is intended to be run as a subprocess, NOT imported directly.
-It is launched by main.py with a single argument: the path to write the
+It is launched by __main__.py with a single argument: the path to write the
 cropped PNG to on success.
 
 Why a subprocess?
@@ -16,7 +16,7 @@ Flow:
   2. Show a borderless fullscreen NSWindow with the screenshot as background.
   3. User draws a selection box with the mouse.
   4. On mouse release: crop the screenshot to the selection, save to argv[1], exit 0.
-  5. On Esc: exit 1 (no file written — main.py treats this as a cancellation).
+  5. On Esc: exit 1 (no file written — __main__.py treats this as a cancellation).
 
 Coordinate system:
   Cocoa uses bottom-left origin (y=0 at the bottom of the screen).
@@ -120,7 +120,7 @@ screenshot  = take_screenshot()
 SCALE       = screenshot.width / SCREEN_W     # 2.0 on Retina, 1.0 otherwise
 ns_screenshot = pil_to_nsimage(screenshot)
 
-OUTPUT_PATH = sys.argv[1]  # Temp file path passed by main.py
+OUTPUT_PATH = sys.argv[1]  # Temp file path passed by __main__.py
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +267,7 @@ class OverlayView(NSView):
     def keyDown_(self, event):
         """Cancel the overlay when the user presses Esc (keyCode 53)."""
         if event.keyCode() == 53:
-            NSApp.terminate_(None)  # Exits with code 0; main.py checks file size
+            NSApp.terminate_(None)  # Exits with code 0; __main__.py checks file size
 
     def acceptsFirstResponder(self):
         """Allow this view to receive keyboard events."""

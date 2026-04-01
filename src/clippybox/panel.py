@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-src/panel.py - Result panel UI.
+src/clippybox/panel.py - Result panel UI.
 
 Displays the AI explanation for a captured screen region and allows the user
 to ask follow-up questions in a persistent chat interface.
@@ -57,11 +57,11 @@ class ResultPanel:
     Floating panel that shows the AI explanation for a captured region.
 
     Lifecycle:
-      1. Instantiated once by main.py when the first capture completes.
+      1. Instantiated once by __main__.py when the first capture completes.
       2. new_capture(image) is called for each subsequent capture — this
          resets the conversation and starts a fresh API call.
       3. The user types follow-up questions in the input box and presses Enter.
-      4. is_open() is checked by main.py before reusing an existing panel.
+      4. is_open() is checked by __main__.py before reusing an existing panel.
 
     Args:
         root: The hidden tkinter root window (tk.Tk instance).
@@ -70,7 +70,7 @@ class ResultPanel:
     def __init__(self, root: tk.Tk) -> None:
         self.root          = root
         self.current_image = None   # PIL image for the current capture session
-        self.history       = []     # Claude conversation history for this session
+        self.history       = []     # conversation history for this session
         self._open         = False
 
         self._build()
@@ -227,7 +227,7 @@ class ResultPanel:
         """
         Return True if the panel window still exists and is open.
 
-        Used by main.py to decide whether to reuse or recreate the panel.
+        Used by __main__.py to decide whether to reuse or recreate the panel.
         """
         try:
             return self._open and self.win.winfo_exists()
@@ -240,7 +240,7 @@ class ResultPanel:
 
     def _explain(self) -> None:
         """
-        Fetch the initial explanation from Claude for the current capture.
+        Fetch the initial explanation from the model for the current capture.
 
         Runs in a daemon thread. Posts the result back to the main thread
         via root.after() to safely update the tkinter widgets.
@@ -256,10 +256,10 @@ class ResultPanel:
 
     def _do_followup(self, question: str) -> None:
         """
-        Send a follow-up question to Claude and append the response.
+        Send a follow-up question to the model and append the response.
 
         Runs in a daemon thread. Always re-sends the original image so
-        Claude has full visual context throughout the conversation.
+        the model has full visual context throughout the conversation.
 
         Args:
             question: The user's question as a plain string.

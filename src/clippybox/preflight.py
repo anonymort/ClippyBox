@@ -13,7 +13,7 @@ import json
 def _is_local_ollama(base_url: str) -> bool:
     """Return True if the base URL points at a local Ollama instance."""
     parsed = urlparse(base_url)
-    return parsed.hostname in ("localhost", "127.0.0.1") and "11434" in str(parsed.port or "")
+    return parsed.hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1") and parsed.port == 11434
 
 
 def _ollama_api_url(base_url: str) -> str:
