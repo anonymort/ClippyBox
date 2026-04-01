@@ -43,11 +43,10 @@ curl -sSL "$REPO" | tar xz -C "$TMPDIR"
 mv "$TMPDIR"/ClippyBox-main "$INSTALL_DIR"
 rm -rf "$TMPDIR"
 
-# Create venv and install deps
+# Create venv and install the package (deps come from pyproject.toml)
 echo "Setting up environment..."
 python3 -m venv "$INSTALL_DIR/.venv"
-"$INSTALL_DIR/.venv/bin/pip" install --quiet \
-    Pillow pynput pyobjc-framework-Cocoa pyobjc-framework-Quartz
+"$INSTALL_DIR/.venv/bin/pip" install --quiet "$INSTALL_DIR"
 
 # Create bin directory and launcher script
 mkdir -p "$BIN_DIR"
