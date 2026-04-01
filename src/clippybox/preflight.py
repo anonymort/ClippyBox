@@ -22,8 +22,26 @@ def _ollama_api_url(base_url: str) -> str:
     return f"{parsed.scheme}://{parsed.hostname}:{parsed.port or 11434}"
 
 
+def _check_accessibility() -> None:
+    """Prompt for Accessibility permission if not already granted."""
+    try:
+        from ApplicationServices import AXIsProcessTrustedWithOptions
+        from CoreFoundation import kCFBooleanTrue
+        # kAXTrustedCheckOptionPrompt triggers the system dialog
+        options = {"AXTrustedCheckOptionPrompt": kCFBooleanTrue}
+        if not AXIsProcessTrustedWithOptions(options):
+            print("Accessibility permission required for the global hotkey.\n")
+            print("A system dialog should have appeared — grant access to your")
+            print("terminal app, then relaunch ClippyBox.")
+            sys.exit(1)
+    except ImportError:
+        pass  # not on macOS or framework unavailable
+
+
 def run() -> None:
     """Run preflight checks. Exits the process if any check fails."""
+    _check_accessibility()
+
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     model = os.environ.get("MODEL", "llava")
 
