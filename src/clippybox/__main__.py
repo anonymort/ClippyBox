@@ -6,13 +6,11 @@ import tempfile
 import subprocess
 import threading
 
-import tkinter as tk
 from PIL import Image
 
 from .panel import ResultPanel
 
 
-_tk_root: tk.Tk | None = None
 _result_panel: ResultPanel | None = None
 _overlay_running: bool = False
 
@@ -42,7 +40,7 @@ def _launch_overlay() -> None:
         if captured:
             image = Image.open(tmp_path)
             image.load()
-            _tk_root.after(0, lambda: _open_panel(image))
+            _result_panel.new_capture(image)
 
     except Exception as e:
         print(f"[ClippyBox] Overlay error: {e}")
@@ -53,15 +51,6 @@ def _launch_overlay() -> None:
         except FileNotFoundError:
             pass
         _overlay_running = False
-
-
-def _open_panel(image: Image.Image) -> None:
-    global _result_panel
-
-    if _result_panel is None or not _result_panel.is_open():
-        _result_panel = ResultPanel(_tk_root)
-
-    _result_panel.new_capture(image)
 
 
 def _setup_hotkey():
@@ -90,7 +79,7 @@ def _setup_hotkey():
 
 
 def main() -> None:
-    global _tk_root
+    global _result_panel
 
     if "--version" in sys.argv:
         from importlib.metadata import version, PackageNotFoundError
@@ -114,8 +103,10 @@ def main() -> None:
     from . import preflight
     preflight.run()
 
-    _tk_root = tk.Tk()
-    _tk_root.withdraw()
+    import webview
+
+    _result_panel = ResultPanel()
+    _result_panel.start()
 
     _setup_hotkey()
 
@@ -123,7 +114,7 @@ def main() -> None:
     print("Press Cmd+Shift+E to capture any region of your screen.")
     print("Press Ctrl+C to quit.")
 
-    _tk_root.mainloop()
+    webview.start()
 
 
 if __name__ == "__main__":
