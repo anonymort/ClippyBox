@@ -233,8 +233,12 @@ class ResultPanel:
         self.chat.see(tk.END)
 
     def _on_token(self, token: str) -> None:
-        """Token callback — schedules UI update on the main thread."""
-        self.root.after(0, lambda t=token: self._stream_token(t))
+        """Token callback — clears placeholder on first token, then appends."""
+        if not self._streaming_started:
+            self._streaming_started = True
+            self.root.after(0, lambda t=token: (self._clear_thinking_placeholder(), self._stream_token(t)))
+        else:
+            self.root.after(0, lambda t=token: self._stream_token(t))
 
     def _explain(self) -> None:
         """
@@ -243,13 +247,12 @@ class ResultPanel:
         """
         try:
             self._set_status("Thinking…")
-            # Clear the "Analyzing…" placeholder before streaming starts
-            self.root.after(0, self._clear_thinking_placeholder)
+            self._streaming_started = False
             response, self.history = ai.explain_capture(
                 self.current_image, [], on_token=self._on_token
             )
         except Exception as e:
-            self.root.after(0, lambda: self._stream_token(f"Error: {e}"))
+            self.root.after(0, lambda: (self._clear_thinking_placeholder(), self._stream_token(f"Error: {e}")))
         finally:
             self._set_status("")
 
@@ -259,13 +262,13 @@ class ResultPanel:
         """
         try:
             self._set_status("Thinking…")
-            self.root.after(0, self._clear_thinking_placeholder)
+            self._streaming_started = False
             response, self.history = ai.ask_followup(
                 self.current_image, question, self.history,
                 on_token=self._on_token,
             )
         except Exception as e:
-            self.root.after(0, lambda: self._stream_token(f"Error: {e}"))
+            self.root.after(0, lambda: (self._clear_thinking_placeholder(), self._stream_token(f"Error: {e}")))
         finally:
             self._set_status("")
 
