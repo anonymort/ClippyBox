@@ -1,427 +1,166 @@
-# -*- coding: utf-8 -*-
 """
-src/clippybox/panel.py - Result panel UI.
+src/clippybox/panel.py - Result panel UI (pywebview).
 
-Displays the AI explanation for a captured screen region and allows the user
-to ask follow-up questions in a persistent chat interface.
-
-UI structure (top to bottom):
-  - Header bar    : app name + hotkey reminder
-  - Capture strip : thumbnail of the captured region + pixel dimensions
-  - Chat area     : scrollable conversation history (AI + user turns)
-  - Input area    : text box + implicit Enter-to-send behaviour
-  - Status line   : "Thinking..." indicator while the API call is in flight
-
-Threading model:
-  All API calls run in daemon threads to keep the UI responsive.
-  Results are posted back to the tkinter main thread via root.after(0, ...).
+Displays the AI explanation in a frameless pywebview window with a
+Glass Dark HTML/CSS interface. Tokens stream in via evaluate_js().
 """
 
+import base64
+import io
+import json
+import os
 import threading
-import tkinter as tk
-from tkinter import scrolledtext
 
-from PIL import Image, ImageTk
+from PIL import Image
 
 from . import ai
 
 
-# ---------------------------------------------------------------------------
-# Design tokens
-# ---------------------------------------------------------------------------
+_PANEL_HTML = os.path.join(os.path.dirname(__file__), "data", "panel.html")
 
-PANEL_WIDTH  = 600
-PANEL_HEIGHT = 740
 
-# Warm dark palette — easier on the eyes than cold blue-blacks
-BG       = "#1c1917"   # Main background (warm near-black)
-BG_CHAT  = "#231f1d"   # Chat area (slightly lighter)
-BG_INPUT = "#2a2520"   # Input field background
-BORDER   = "#3a3530"   # Divider lines
+class PanelAPI:
+    """JS → Python bridge. Methods are callable from JS as window.pywebview.api.*"""
 
-TEXT     = "#e8e0d8"   # Primary text (warm off-white)
-TEXT_DIM = "#7a6f67"   # Muted text (placeholders, labels)
-TEXT_YOU = "#c4a882"   # "You" label colour (warm tan)
-TEXT_AI  = "#a0b8a0"   # "AI" label colour (muted sage)
+    def __init__(self, panel: "ResultPanel") -> None:
+        self._panel = panel
 
-FONT_BODY  = ("Georgia", 20)             # Serif for AI responses — easy to read
-FONT_LABEL = ("Helvetica Neue", 11, "bold")
-FONT_INPUT = ("Helvetica Neue", 20)      # Matches what the user types
-FONT_SMALL = ("Helvetica Neue", 11)
+    def send_followup(self, question: str) -> None:
+        threading.Thread(
+            target=self._panel._do_followup,
+            args=(question,),
+            daemon=True,
+        ).start()
 
 
 class ResultPanel:
     """
     Floating panel that shows the AI explanation for a captured region.
 
-    Lifecycle:
-      1. Instantiated once by __main__.py when the first capture completes.
-      2. new_capture(image) is called for each subsequent capture — this
-         resets the conversation and starts a fresh API call.
-      3. The user types follow-up questions in the input box and presses Enter.
-      4. is_open() is checked by __main__.py before reusing an existing panel.
-
-    Args:
-        root: The hidden tkinter root window (tk.Tk instance).
+    Public API:
+      new_capture(image) — start a new capture session
+      is_open()          — check if the window is still open
+      start()            — create the window (call once from main thread)
     """
 
-    def __init__(self, root: tk.Tk) -> None:
-        self.root          = root
-        self.current_image = None   # PIL image for the current capture session
-        self.history       = []     # conversation history for this session
-        self._open         = False
+    def __init__(self) -> None:
+        self.current_image = None
+        self.history: list = []
+        self._window = None
+        self._open = False
+        self._loaded = threading.Event()
+        self._model = os.environ.get("MODEL", "llava")
 
-        self._build()
+    def start(self) -> None:
+        """Create the pywebview window. Must be called before webview.start()."""
+        import webview
 
-    # -----------------------------------------------------------------------
-    # UI construction
-    # -----------------------------------------------------------------------
+        screen = webview.screens[0]
+        x = screen.width - 580 - 24
+        y = 60
 
-    def _build(self) -> None:
-        """Create the top-level window and all child widgets."""
-        self.win = tk.Toplevel(self.root)
-        self.win.title("ClippyBox")
-
-        # Position panel to the right edge of the primary screen
-        sw = self.root.winfo_screenwidth()
-        self.win.geometry(f"{PANEL_WIDTH}x{PANEL_HEIGHT}+{sw - PANEL_WIDTH - 24}+60")
-        self.win.configure(bg=BG)
-        self.win.resizable(True, True)
-        self.win.minsize(PANEL_WIDTH, 500)  # Ensure input box is always visible
-        self.win.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._open = True
-
-        self._build_header()
-        self._build_capture_strip()
-        self._build_chat()
-        self._build_input()
-
-    def _build_header(self) -> None:
-        """App name on the left, hotkey hint on the right."""
-        frame = tk.Frame(self.win, bg=BG, pady=14)
-        frame.pack(fill=tk.X, padx=20)
-
-        tk.Label(frame, text="ClippyBox", bg=BG, fg=TEXT,
-                 font=("Helvetica Neue", 13, "bold")).pack(side=tk.LEFT)
-
-        tk.Label(frame, text="⌘⇧E to capture", bg=BG, fg=TEXT_DIM,
-                 font=FONT_SMALL).pack(side=tk.RIGHT)
-
-        tk.Frame(self.win, bg=BORDER, height=1).pack(fill=tk.X)
-
-    def _build_capture_strip(self) -> None:
-        """Thumbnail of the captured region and its pixel dimensions."""
-        self.strip = tk.Frame(self.win, bg=BG, pady=10)
-        self.strip.pack(fill=tk.X, padx=20)
-
-        self.thumb_lbl = tk.Label(self.strip, bg=BG, fg=TEXT_DIM,
-                                  text="No capture yet", font=FONT_SMALL)
-        self.thumb_lbl.pack(side=tk.LEFT)
-
-        self.info_lbl = tk.Label(self.strip, bg=BG, fg=TEXT_DIM,
-                                 text="", font=FONT_SMALL)
-        self.info_lbl.pack(side=tk.LEFT, padx=10)
-
-        tk.Frame(self.win, bg=BORDER, height=1).pack(fill=tk.X)
-
-    def _build_chat(self) -> None:
-        """Scrollable text widget that holds the conversation history."""
-        self.chat = scrolledtext.ScrolledText(
-            self.win,
-            bg=BG_CHAT, fg=TEXT,
-            font=FONT_BODY,
-            wrap=tk.WORD,
-            state=tk.DISABLED,      # Read-only; we enable it briefly to insert text
-            relief=tk.FLAT, bd=0,
-            padx=20, pady=16,
-            spacing1=2, spacing3=6,
-            insertbackground=TEXT,
-            selectbackground="#3a3020",
+        self._window = webview.create_window(
+            "ClippyBox",
+            _PANEL_HTML,
+            js_api=PanelAPI(self),
+            width=580,
+            height=700,
+            x=x,
+            y=y,
+            frameless=True,
+            min_size=(580, 500),
+            hidden=True,
         )
-        self.chat.pack(fill=tk.BOTH, expand=True)
-        self.chat.configure(height=18)  # ~18 lines visible minimum
+        self._window.events.loaded += self._on_loaded
+        self._window.events.closed += self._on_closed
 
-        # Named text tags for styled runs within the chat widget
-        self.chat.tag_configure("you_label",   foreground=TEXT_YOU, font=FONT_LABEL)
-        self.chat.tag_configure("ai_label",    foreground=TEXT_AI,  font=FONT_LABEL)
-        self.chat.tag_configure("you_body",    foreground=TEXT,      font=FONT_INPUT)
-        self.chat.tag_configure("ai_body",     foreground=TEXT,      font=FONT_BODY)
-        self.chat.tag_configure("thinking",    foreground=TEXT_DIM,  font=("Helvetica Neue", 13, "italic"))
+    def _on_loaded(self) -> None:
+        self._loaded.set()
 
-        tk.Frame(self.win, bg=BORDER, height=1).pack(fill=tk.X)
+    def _on_closed(self) -> None:
+        self._open = False
 
-    def _build_input(self) -> None:
-        """
-        Multi-line input box with placeholder text.
+    def _eval_js(self, js: str) -> None:
+        """Safely call evaluate_js, waiting for the window to be loaded."""
+        if not self._loaded.wait(timeout=10):
+            return
+        if self._window is None:
+            return
+        try:
+            self._window.evaluate_js(js)
+        except Exception:
+            pass
 
-        Enter sends the message; Shift+Enter inserts a newline.
-        The send button is implicit (Enter key) to keep the UI clean.
-        """
-        container = tk.Frame(self.win, bg=BG_INPUT)
-        container.pack(fill=tk.X)
-
-        self.input = tk.Text(
-            container,
-            bg=BG_INPUT, fg=TEXT,
-            font=FONT_INPUT,
-            height=3,
-            wrap=tk.WORD,
-            relief=tk.FLAT, bd=0,
-            padx=16, pady=12,
-            insertbackground=TEXT,
-        )
-        self.input.pack(fill=tk.X, side=tk.LEFT, expand=True)
-        self.input.insert("1.0", "Ask a follow-up…")
-        self.input.configure(fg=TEXT_DIM)
-
-        self.input.bind("<FocusIn>",  self._on_focus_in)
-        self.input.bind("<FocusOut>", self._on_focus_out)
-        self.input.bind("<Return>",   self._on_enter)
-
-        # Status line (e.g. "Thinking…") sits below the input
-        self.status_var = tk.StringVar(value="")
-        tk.Label(self.win, textvariable=self.status_var,
-                 bg=BG, fg=TEXT_DIM, font=FONT_SMALL,
-                 anchor="w", pady=5).pack(fill=tk.X, padx=20)
-
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
     # Public API
-    # -----------------------------------------------------------------------
+    # -------------------------------------------------------------------
 
     def new_capture(self, image: Image.Image) -> None:
-        """
-        Start a new capture session.
-
-        Resets conversation history, updates the thumbnail, clears the chat,
-        and kicks off the initial explanation API call in a background thread.
-
-        Args:
-            image: The cropped PIL image from the overlay selection.
-        """
+        """Start a new capture session."""
         self.current_image = image
-        self.history       = []
+        self.history = []
 
-        self._update_thumb(image)
-        self._clear_chat()
-        self._append("AI", "Analyzing…", "thinking")
+        # Generate thumbnail
+        thumb = image.copy()
+        thumb.thumbnail((128, 80), Image.LANCZOS)
+        buf = io.BytesIO()
+        thumb.convert("RGB").save(buf, format="JPEG", quality=85)
+        thumb_b64 = base64.standard_b64encode(buf.getvalue()).decode("utf-8")
 
-        self.win.deiconify()
-        self.win.lift()
+        w, h = image.size
+        model = json.dumps(self._model)
+
+        self._window.show()
+        self._eval_js(
+            f"newCapture({json.dumps(thumb_b64)}, {w}, {h}, {model})"
+        )
+        self._open = True
 
         threading.Thread(target=self._explain, daemon=True).start()
 
     def is_open(self) -> bool:
-        """
-        Return True if the panel window still exists and is open.
+        return self._open
 
-        Used by __main__.py to decide whether to reuse or recreate the panel.
-        """
-        try:
-            return self._open and self.win.winfo_exists()
-        except Exception:
-            return False
-
-    # -----------------------------------------------------------------------
-    # API calls (run in background threads)
-    # -----------------------------------------------------------------------
-
-    def _stream_token(self, token: str) -> None:
-        """Append a streaming token to the chat widget (must be called on main thread)."""
-        self.chat.configure(state=tk.NORMAL)
-        self.chat.insert(tk.END, token, "ai_body")
-        self.chat.configure(state=tk.DISABLED)
-        self.chat.see(tk.END)
+    # -------------------------------------------------------------------
+    # AI calls (background threads)
+    # -------------------------------------------------------------------
 
     def _on_token(self, token: str) -> None:
-        """Token callback — clears placeholder on first token, then appends."""
-        if not self._streaming_started:
-            self._streaming_started = True
-            self.root.after(0, lambda t=token: (self._clear_thinking_placeholder(), self._stream_token(t)))
-        else:
-            self.root.after(0, lambda t=token: self._stream_token(t))
+        self._eval_js(f"appendToken({json.dumps(token)})")
 
     def _explain(self) -> None:
-        """
-        Fetch the initial explanation from the model, streaming tokens
-        into the panel as they arrive.
-        """
         try:
-            self._set_status("Thinking…")
             self._streaming_started = False
+
+            def on_first_token(token: str) -> None:
+                if not self._streaming_started:
+                    self._streaming_started = True
+                    self._eval_js("startStreaming()")
+                self._on_token(token)
+
             response, self.history = ai.explain_capture(
-                self.current_image, [], on_token=self._on_token
+                self.current_image, [], on_token=on_first_token
             )
         except Exception as e:
-            self.root.after(0, lambda: (self._clear_thinking_placeholder(), self._stream_token(f"Error: {e}")))
+            self._eval_js(f"showError({json.dumps(str(e))})")
         finally:
-            self._set_status("")
+            self._eval_js("endStreaming()")
 
     def _do_followup(self, question: str) -> None:
-        """
-        Send a follow-up question, streaming tokens into the panel.
-        """
         try:
-            self._set_status("Thinking…")
             self._streaming_started = False
+
+            def on_first_token(token: str) -> None:
+                if not self._streaming_started:
+                    self._streaming_started = True
+                    self._eval_js("startStreaming()")
+                self._on_token(token)
+
             response, self.history = ai.ask_followup(
                 self.current_image, question, self.history,
-                on_token=self._on_token,
+                on_token=on_first_token,
             )
         except Exception as e:
-            self.root.after(0, lambda: (self._clear_thinking_placeholder(), self._stream_token(f"Error: {e}")))
+            self._eval_js(f"showError({json.dumps(str(e))})")
         finally:
-            self._set_status("")
-
-    # -----------------------------------------------------------------------
-    # Chat widget helpers
-    # -----------------------------------------------------------------------
-
-    def _append(self, role: str, text: str, body_tag: str) -> None:
-        """
-        Append a labelled message block to the chat widget.
-
-        Each block consists of a small role label ("AI" or "You") on its own
-        line, followed by the message body with the given text tag applied.
-
-        Args:
-            role:     Display name for the sender, e.g. "AI" or "You".
-            text:     Message content.
-            body_tag: tkinter text tag name for styling the body text.
-        """
-        self.chat.configure(state=tk.NORMAL)
-
-        # Add spacing between messages
-        if self.chat.get("1.0", tk.END).strip():
-            self.chat.insert(tk.END, "\n\n")
-
-        label_tag = "ai_label" if role == "AI" else "you_label"
-        self.chat.insert(tk.END, f"{role}\n", label_tag)
-        self.chat.insert(tk.END, text, body_tag)
-
-        self.chat.configure(state=tk.DISABLED)
-        self.chat.see(tk.END)
-
-    def _clear_thinking_placeholder(self) -> None:
-        """Remove the 'Thinking…' or 'Analyzing…' placeholder so streaming tokens
-        can be appended cleanly."""
-        self.chat.configure(state=tk.NORMAL)
-        content = self.chat.get("1.0", tk.END)
-        for placeholder in ("Thinking…", "Analyzing…"):
-            idx = content.rfind(placeholder)
-            if idx == -1:
-                continue
-            line = content[:idx].count("\n") + 1
-            col = idx - content[:idx].rfind("\n") - 1
-            self.chat.delete(f"{line}.{col}", tk.END)
-            break
-        self.chat.configure(state=tk.DISABLED)
-
-    def _clear_chat(self) -> None:
-        """Delete all content from the chat widget."""
-        self.chat.configure(state=tk.NORMAL)
-        self.chat.delete("1.0", tk.END)
-        self.chat.configure(state=tk.DISABLED)
-
-    def _update_thumb(self, image: Image.Image) -> None:
-        """
-        Update the thumbnail strip with the new capture.
-
-        Creates a 72x54 thumbnail for display and updates the dimension label.
-        Keeps a reference to the PhotoImage on the label to prevent garbage
-        collection (tkinter does not hold its own reference).
-
-        Args:
-            image: The full captured PIL image.
-        """
-        try:
-            thumb = image.copy()
-            thumb.thumbnail((72, 54), Image.LANCZOS)
-            photo = ImageTk.PhotoImage(thumb)
-            self.thumb_lbl.configure(image=photo, text="")
-            self.thumb_lbl.image = photo  # Prevent GC
-            w, h = image.size
-            self.info_lbl.configure(text=f"{w}×{h}px")
-        except Exception:
-            pass
-
-    # -----------------------------------------------------------------------
-    # Input widget helpers
-    # -----------------------------------------------------------------------
-
-    def _send(self) -> None:
-        """
-        Read the input box, append the question to the chat, and fire the API call.
-
-        Does nothing if the input is empty or no image has been captured yet.
-        """
-        question = self._get_input()
-        if not question or not self.current_image:
-            return
-
-        self._clear_input()
-        self._append("You", question, "you_body")
-        self._append("AI", "Thinking…", "thinking")
-
-        threading.Thread(
-            target=self._do_followup,
-            args=(question,),
-            daemon=True,
-        ).start()
-
-    def _get_input(self) -> str:
-        """
-        Return the current input box text, stripped of whitespace.
-
-        Returns an empty string if the box contains only the placeholder text.
-        """
-        text = self.input.get("1.0", tk.END).strip()
-        return "" if text == "Ask a follow-up…" else text
-
-    def _clear_input(self) -> None:
-        """Reset the input box to its placeholder state."""
-        self.input.delete("1.0", tk.END)
-        self.input.insert("1.0", "Ask a follow-up…")
-        self.input.configure(fg=TEXT_DIM)
-
-    def _set_status(self, message: str) -> None:
-        """
-        Update the status line beneath the input box.
-
-        Always scheduled on the main thread via root.after() so it is safe
-        to call from background threads.
-
-        Args:
-            message: Text to display, e.g. "Thinking…" or "" to clear.
-        """
-        self.root.after(0, lambda: self.status_var.set(message))
-
-    # -----------------------------------------------------------------------
-    # Event handlers
-    # -----------------------------------------------------------------------
-
-    def _on_enter(self, event: tk.Event) -> str | None:
-        """Send on Enter; allow Shift+Enter to insert a newline."""
-        if not (event.state & 0x1):  # Shift not held
-            self._send()
-            return "break"           # Prevent the default newline insertion
-        return None
-
-    def _on_focus_in(self, _: tk.Event) -> None:
-        """Clear the placeholder text when the input gains focus."""
-        if self.input.get("1.0", tk.END).strip() == "Ask a follow-up…":
-            self.input.delete("1.0", tk.END)
-            self.input.configure(fg=TEXT)
-
-    def _on_focus_out(self, _: tk.Event) -> None:
-        """Restore the placeholder text when the input loses focus while empty."""
-        if not self.input.get("1.0", tk.END).strip():
-            self.input.insert("1.0", "Ask a follow-up…")
-            self.input.configure(fg=TEXT_DIM)
-
-    def _on_close(self) -> None:
-        """Handle the window close button — mark panel as closed and destroy."""
-        self._open = False
-        try:
-            self.win.destroy()
-        except Exception:
-            pass
+            self._eval_js("endStreaming()")
