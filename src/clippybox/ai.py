@@ -61,7 +61,7 @@ _load_dotenv()
 
 _base_url   = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 _model      = os.environ.get("MODEL", "llava")
-_max_tokens = int(os.environ.get("MAX_TOKENS", "1024"))
+_max_tokens = int(os.environ.get("MAX_TOKENS", "512"))
 _api_key    = os.environ.get("API_KEY") or "ollama"
 
 
@@ -82,23 +82,37 @@ SYSTEM_PROMPT = _load_system_prompt()
 # Helpers
 # ---------------------------------------------------------------------------
 
+_MAX_EDGE = 768  # Vision models internally resize; larger images are wasted compute.
+
+
+def _prepare_image(image) -> "Image.Image":
+    """
+    Downscale to at most _MAX_EDGE on the longest side.
+
+    Returns a new image (or the original if already small enough).
+    """
+    from PIL import Image as _Img
+
+    w, h = image.size
+    if max(w, h) <= _MAX_EDGE:
+        return image
+    ratio = _MAX_EDGE / max(w, h)
+    return image.resize((int(w * ratio), int(h * ratio)), _Img.LANCZOS)
+
+
 def _image_to_base64(image) -> str:
     """
-    Encode a PIL image as a base64 PNG data-URI string.
+    Downscale and JPEG-encode a PIL image for the vision API.
 
-    PNG is used (over JPEG) for lossless quality, which matters when the
-    captured region contains code, error messages, or small text.
-
-    Args:
-        image: A PIL.Image.Image instance.
-
-    Returns:
-        A data URI string: "data:image/png;base64,<data>".
+    JPEG is ~5-10x smaller than PNG for screenshots, which reduces
+    base64 encoding time and payload size. Quality 85 preserves text
+    legibility while keeping the payload compact.
     """
+    image = _prepare_image(image)
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
+    image.convert("RGB").save(buffer, format="JPEG", quality=85)
     data = base64.standard_b64encode(buffer.getvalue()).decode("utf-8")
-    return f"data:image/png;base64,{data}"
+    return f"data:image/jpeg;base64,{data}"
 
 
 def _build_text_message(text: str) -> dict:
@@ -130,16 +144,21 @@ def _build_image_message(image, text: str) -> dict:
     }
 
 
-def _call_api(messages: list) -> str:
+def _call_api(messages: list, on_token=None) -> str:
     """
-    POST to the chat completions endpoint and return the response text.
+    POST to the chat completions endpoint.
 
-    Uses urllib.request (stdlib) — no third-party HTTP library needed.
+    If *on_token* is provided, streams the response and calls
+    on_token(delta_str) for each chunk. Returns the full concatenated text.
+    If *on_token* is None, uses a non-streaming request and returns the
+    complete response at once.
     """
+    stream = on_token is not None
     payload = json.dumps({
         "model": _model,
         "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
         "max_tokens": _max_tokens,
+        "stream": stream,
     }).encode("utf-8")
 
     req = urllib.request.Request(
@@ -151,26 +170,46 @@ def _call_api(messages: list) -> str:
         },
     )
 
-    with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read())
+    if not stream:
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+        content = data["choices"][0]["message"]["content"]
+        return content if content else "(No response from model)"
 
-    content = data["choices"][0]["message"]["content"]
-    if content is None:
-        return "(No response from model)"
-    return content
+    # Streaming: read SSE lines, extract deltas
+    parts: list[str] = []
+    with urllib.request.urlopen(req) as resp:
+        for raw_line in resp:
+            line = raw_line.decode("utf-8").strip()
+            if not line.startswith("data:"):
+                continue
+            data_str = line[len("data:"):].strip()
+            if data_str == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data_str)
+                delta = chunk["choices"][0]["delta"].get("content", "")
+                if delta:
+                    parts.append(delta)
+                    on_token(delta)
+            except (json.JSONDecodeError, KeyError, IndexError):
+                continue
+
+    return "".join(parts) or "(No response from model)"
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def explain_capture(image, history: list) -> tuple[str, list]:
+def explain_capture(image, history: list, on_token=None) -> tuple[str, list]:
     """
     Send a newly captured screenshot to the model and return an explanation.
 
     Args:
-        image:   PIL.Image.Image — the cropped screen region to explain.
-        history: Should be an empty list for a new session.
+        image:    PIL.Image.Image — the cropped screen region to explain.
+        history:  Should be an empty list for a new session.
+        on_token: Optional callback(str) invoked with each streamed token.
 
     Returns:
         A (response_text, updated_history) tuple. Pass updated_history back
@@ -178,7 +217,7 @@ def explain_capture(image, history: list) -> tuple[str, list]:
     """
     prompt = "Please explain what I'm looking at in this screenshot."
     api_message = _build_image_message(image, prompt)
-    response_text = _call_api([api_message])
+    response_text = _call_api([api_message], on_token=on_token)
 
     # Store text-only in history so follow-ups don't carry a duplicate image.
     updated_history = [
@@ -188,7 +227,7 @@ def explain_capture(image, history: list) -> tuple[str, list]:
     return response_text, updated_history
 
 
-def ask_followup(image, question: str, history: list) -> tuple[str, list]:
+def ask_followup(image, question: str, history: list, on_token=None) -> tuple[str, list]:
     """
     Send a follow-up question about the current capture.
 
@@ -198,7 +237,7 @@ def ask_followup(image, question: str, history: list) -> tuple[str, list]:
     """
     api_message = _build_image_message(image, question)
     messages = history + [api_message]
-    response_text = _call_api(messages)
+    response_text = _call_api(messages, on_token=on_token)
 
     updated_history = history + [
         _build_text_message(question),

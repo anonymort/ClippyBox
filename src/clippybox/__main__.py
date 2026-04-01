@@ -107,7 +107,7 @@ def main() -> None:
         print("Environment variables (set in ~/.config/clippybox/.env):")
         print("  OLLAMA_BASE_URL  Ollama endpoint    (default: http://localhost:11434/v1)")
         print("  MODEL            Vision model       (default: llava)")
-        print("  MAX_TOKENS       Response length    (default: 1024)")
+        print("  MAX_TOKENS       Response length    (default: 512)")
         print("  API_KEY          API key            (default: ollama)")
         return
 

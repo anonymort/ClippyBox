@@ -82,8 +82,8 @@ After granting either permission, quit and restart ClippyBox.
             └─ user draws a selection box
             └─ selection is cropped and saved to a temp PNG file
        └─ src/clippybox/__main__.py reads the temp file
-            └─ src/clippybox/ai.py sends image to local vision model via Ollama
-            └─ src/clippybox/panel.py displays the response (tkinter)
+            └─ src/clippybox/ai.py downscales & sends image to Ollama (streaming)
+            └─ src/clippybox/panel.py renders tokens as they arrive (tkinter)
             └─ follow-up questions re-send image + conversation history
 ```
 
@@ -134,7 +134,7 @@ cp .env.example ~/.config/clippybox/.env
 |-------------------|----------------------------------|--------------------------------------------------|
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1`      | Ollama (or any OpenAI-compatible) endpoint       |
 | `MODEL`           | `llava`                          | Vision model to use (must be pulled in Ollama)   |
-| `MAX_TOKENS`      | `1024`                           | Maximum response length                          |
+| `MAX_TOKENS`      | `512`                            | Maximum response length                          |
 | `API_KEY`         | `ollama`                         | API key — only needed for hosted endpoints       |
 
 To use a different model:

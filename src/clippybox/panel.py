@@ -17,7 +17,6 @@ Threading model:
   Results are posted back to the tkinter main thread via root.after(0, ...).
 """
 
-import re
 import threading
 import tkinter as tk
 from tkinter import scrolledtext
@@ -49,7 +48,6 @@ FONT_BODY  = ("Georgia", 20)             # Serif for AI responses — easy to re
 FONT_LABEL = ("Helvetica Neue", 11, "bold")
 FONT_INPUT = ("Helvetica Neue", 20)      # Matches what the user types
 FONT_SMALL = ("Helvetica Neue", 11)
-FONT_MONO  = ("Menlo", 12)               # Code blocks
 
 
 class ResultPanel:
@@ -149,17 +147,6 @@ class ResultPanel:
         self.chat.tag_configure("you_body",    foreground=TEXT,      font=FONT_INPUT)
         self.chat.tag_configure("ai_body",     foreground=TEXT,      font=FONT_BODY)
         self.chat.tag_configure("thinking",    foreground=TEXT_DIM,  font=("Helvetica Neue", 13, "italic"))
-        self.chat.tag_configure("code",        foreground="#b8d4b8", font=FONT_MONO,
-                                background="#1a1f1a")
-        # Markdown formatting tags
-        self.chat.tag_configure("h1",          foreground=TEXT,      font=("Helvetica Neue", 22, "bold"))
-        self.chat.tag_configure("h2",          foreground=TEXT,      font=("Helvetica Neue", 18, "bold"))
-        self.chat.tag_configure("h3",          foreground=TEXT,      font=("Helvetica Neue", 15, "bold"))
-        self.chat.tag_configure("bold",        foreground=TEXT,      font=("Georgia", 20, "bold"))
-        self.chat.tag_configure("italic",      foreground=TEXT,      font=("Georgia", 20, "italic"))
-        self.chat.tag_configure("bold_italic", foreground=TEXT,      font=("Georgia", 20, "bold", "italic"))
-        self.chat.tag_configure("code_inline", foreground="#b8d4b8", font=FONT_MONO,
-                                background="#1a1f1a")
 
         tk.Frame(self.win, bg=BORDER, height=1).pack(fill=tk.X)
 
@@ -238,40 +225,47 @@ class ResultPanel:
     # API calls (run in background threads)
     # -----------------------------------------------------------------------
 
+    def _stream_token(self, token: str) -> None:
+        """Append a streaming token to the chat widget (must be called on main thread)."""
+        self.chat.configure(state=tk.NORMAL)
+        self.chat.insert(tk.END, token, "ai_body")
+        self.chat.configure(state=tk.DISABLED)
+        self.chat.see(tk.END)
+
+    def _on_token(self, token: str) -> None:
+        """Token callback — schedules UI update on the main thread."""
+        self.root.after(0, lambda t=token: self._stream_token(t))
+
     def _explain(self) -> None:
         """
-        Fetch the initial explanation from the model for the current capture.
-
-        Runs in a daemon thread. Posts the result back to the main thread
-        via root.after() to safely update the tkinter widgets.
+        Fetch the initial explanation from the model, streaming tokens
+        into the panel as they arrive.
         """
         try:
             self._set_status("Thinking…")
-            response, self.history = ai.explain_capture(self.current_image, [])
-            self.root.after(0, lambda: self._replace_thinking(response))
+            # Clear the "Analyzing…" placeholder before streaming starts
+            self.root.after(0, self._clear_thinking_placeholder)
+            response, self.history = ai.explain_capture(
+                self.current_image, [], on_token=self._on_token
+            )
         except Exception as e:
-            self.root.after(0, lambda: self._replace_thinking(f"Error: {e}"))
+            self.root.after(0, lambda: self._stream_token(f"Error: {e}"))
         finally:
             self._set_status("")
 
     def _do_followup(self, question: str) -> None:
         """
-        Send a follow-up question to the model and append the response.
-
-        Runs in a daemon thread. Always re-sends the original image so
-        the model has full visual context throughout the conversation.
-
-        Args:
-            question: The user's question as a plain string.
+        Send a follow-up question, streaming tokens into the panel.
         """
         try:
             self._set_status("Thinking…")
+            self.root.after(0, self._clear_thinking_placeholder)
             response, self.history = ai.ask_followup(
-                self.current_image, question, self.history
+                self.current_image, question, self.history,
+                on_token=self._on_token,
             )
-            self.root.after(0, lambda: self._replace_thinking(response))
         except Exception as e:
-            self.root.after(0, lambda: self._replace_thinking(f"Error: {e}"))
+            self.root.after(0, lambda: self._stream_token(f"Error: {e}"))
         finally:
             self._set_status("")
 
@@ -304,119 +298,20 @@ class ResultPanel:
         self.chat.configure(state=tk.DISABLED)
         self.chat.see(tk.END)
 
-    def _replace_thinking(self, new_text: str) -> None:
-        """
-        Replace the "Thinking…" or "Analyzing…" placeholder with the real response,
-        rendered with markdown formatting.
-
-        Searches backwards for the placeholder and deletes from that point to end,
-        then inserts the markdown-formatted response.
-
-        Args:
-            new_text: The markdown response text to substitute in.
-        """
+    def _clear_thinking_placeholder(self) -> None:
+        """Remove the 'Thinking…' or 'Analyzing…' placeholder so streaming tokens
+        can be appended cleanly."""
         self.chat.configure(state=tk.NORMAL)
         content = self.chat.get("1.0", tk.END)
-
         for placeholder in ("Thinking…", "Analyzing…"):
             idx = content.rfind(placeholder)
             if idx == -1:
                 continue
             line = content[:idx].count("\n") + 1
-            col  = idx - content[:idx].rfind("\n") - 1
-            # Delete from placeholder position to end, then insert markdown
+            col = idx - content[:idx].rfind("\n") - 1
             self.chat.delete(f"{line}.{col}", tk.END)
-            self._insert_markdown(new_text)
             break
-        else:
-            self._insert_markdown(new_text)
-
         self.chat.configure(state=tk.DISABLED)
-        self.chat.see(tk.END)
-
-    def _insert_markdown(self, text: str) -> None:
-        """
-        Insert markdown-formatted text into the chat widget.
-
-        Handles: headers (h1–h3), fenced code blocks, bullet and numbered lists,
-        and inline formatting (**bold**, *italic*, ***bold italic***, `code`).
-
-        Assumes the chat widget is already in NORMAL (editable) state.
-
-        Args:
-            text: Markdown string to render.
-        """
-        lines = text.split("\n")
-        in_code_block = False
-        code_lines: list[str] = []
-
-        for line in lines:
-            # --- Fenced code blocks ---
-            if line.startswith("```"):
-                if not in_code_block:
-                    in_code_block = True
-                    code_lines = []
-                else:
-                    in_code_block = False
-                    self.chat.insert(tk.END, "\n".join(code_lines) + "\n", "code")
-                continue
-
-            if in_code_block:
-                code_lines.append(line)
-                continue
-
-            # --- Block-level elements ---
-            if line.startswith("### "):
-                self._insert_inline(line[4:], "h3")
-                self.chat.insert(tk.END, "\n")
-            elif line.startswith("## "):
-                self._insert_inline(line[3:], "h2")
-                self.chat.insert(tk.END, "\n")
-            elif line.startswith("# "):
-                self._insert_inline(line[2:], "h1")
-                self.chat.insert(tk.END, "\n")
-            elif re.match(r"^[-*]\s", line):
-                self.chat.insert(tk.END, "  • ", "ai_body")
-                self._insert_inline(line[2:], "ai_body")
-                self.chat.insert(tk.END, "\n")
-            elif re.match(r"^\d+\.\s", line):
-                m = re.match(r"^(\d+\.\s)", line)
-                self.chat.insert(tk.END, "  " + m.group(1), "ai_body")
-                self._insert_inline(line[m.end():], "ai_body")
-                self.chat.insert(tk.END, "\n")
-            elif line == "":
-                self.chat.insert(tk.END, "\n")
-            else:
-                self._insert_inline(line, "ai_body")
-                self.chat.insert(tk.END, "\n")
-
-    def _insert_inline(self, text: str, base_tag: str) -> None:
-        """
-        Insert a single line of text with inline markdown formatting applied.
-
-        Recognises ***bold italic***, **bold**, *italic*, and `inline code`.
-        Unstyled spans use base_tag.
-
-        Assumes the chat widget is already in NORMAL state.
-
-        Args:
-            text:     The line content (no leading block markers).
-            base_tag: Tag to apply to plain text spans.
-        """
-        pattern = r"(\*\*\*[^*]+?\*\*\*|\*\*[^*]+?\*\*|\*[^*]+?\*|`[^`]+?`)"
-        for part in re.split(pattern, text):
-            if not part:
-                continue
-            if part.startswith("***") and part.endswith("***"):
-                self.chat.insert(tk.END, part[3:-3], "bold_italic")
-            elif part.startswith("**") and part.endswith("**"):
-                self.chat.insert(tk.END, part[2:-2], "bold")
-            elif part.startswith("*") and part.endswith("*") and len(part) > 2:
-                self.chat.insert(tk.END, part[1:-1], "italic")
-            elif part.startswith("`") and part.endswith("`") and len(part) > 2:
-                self.chat.insert(tk.END, part[1:-1], "code_inline")
-            else:
-                self.chat.insert(tk.END, part, base_tag)
 
     def _clear_chat(self) -> None:
         """Delete all content from the chat widget."""
