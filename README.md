@@ -13,24 +13,32 @@ Works everywhere — your IDE, browser, terminal, PDF viewer, Figma, anywhere. N
 ## Install
 
 ```bash
-brew tap anonymort/clippybox
-brew install clippybox
-clippybox
+curl -sSL https://raw.githubusercontent.com/anonymort/ClippyBox/main/install.sh | bash
 ```
 
-First install may take a few minutes while pyobjc dependencies compile.
+This creates an isolated environment at `~/.local/share/clippybox/` and adds a `clippybox` command to `~/.local/bin/`.
+
 First launch will prompt you to download a vision model if one isn't available locally.
 
 <details>
 <summary>Developer install (from source)</summary>
 
 ```bash
-git clone https://github.com/anonymort/clippybox
-cd clippybox
+git clone https://github.com/anonymort/ClippyBox
+cd ClippyBox
 uv venv
 source .venv/bin/activate
 uv pip install -e .
 python -m clippybox
+```
+
+</details>
+
+<details>
+<summary>Uninstall</summary>
+
+```bash
+rm -rf ~/.local/share/clippybox ~/.local/bin/clippybox
 ```
 
 </details>
