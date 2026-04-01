@@ -9,6 +9,7 @@ class Clippybox < Formula
   depends_on :macos
   depends_on "python@3.12"
   depends_on "python-tk@3.12"
+  depends_on "rust" => :build  # needed for jiter and pydantic-core (maturin builds)
 
   # Generate resource blocks with: poet -r requirements.txt
   # resource "openai" do ... end
