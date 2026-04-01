@@ -41,47 +41,57 @@ Replace the tkinter-based result panel with a pywebview window rendering HTML/CS
 
 - **pywebview** frameless window (no native title bar)
 - Header row acts as drag region via `-webkit-app-region: drag`
-- Window size: 580×700, positioned at right edge of screen
-- Resizable with min size 400×500
+- Window size: 580×700, positioned at right edge of screen using `webview.screens[0].width`
+- Resizable with min size 580×500
 
 ### Files Changed
 
 | File | Change |
 |------|--------|
-| `panel.py` | Complete rewrite: replace tkinter with pywebview. Create a `webview.create_window()` call with frameless=True. Expose Python functions to JS via `webview.expose()` for sending follow-up questions. |
-| `panel.html` | New file in `data/`: the full HTML/CSS/JS template for the panel UI. Receives data via pywebview's JS bridge. |
-| `__main__.py` | Minor: replace `tk.Tk()` + `mainloop()` with pywebview event loop integration. The hotkey listener and overlay subprocess remain unchanged. |
-| `pyproject.toml` | Add `pywebview>=5.0` to dependencies |
+| `src/clippybox/panel.py` | Complete rewrite: replace tkinter with pywebview. Create a `webview.create_window()` with `frameless=True`. Expose a `PanelAPI` class via `js_api=` parameter (not the removed `webview.expose()`). |
+| `src/clippybox/data/panel.html` | New file: the full HTML/CSS/JS template for the panel UI. Communicates with Python via `window.pywebview.api.*` bridge. |
+| `src/clippybox/__main__.py` | Replace `tk.Tk()` + `mainloop()` with `webview.start()`. Hotkey listener and overlay subprocess unchanged. |
+| `pyproject.toml` | Add `pywebview>=5.0` to dependencies. Extend `package-data` to include `"data/*.html"`. |
 | `requirements.txt` | Add `pywebview>=5.0` |
 
 ### Files NOT Changed
 
-- `ai.py` — no changes needed. The streaming `on_token` callback API works the same.
-- `overlay_process.py` — completely independent (PyObjC subprocess), untouched.
+- `ai.py` — streaming `on_token` callback API unchanged.
+- `overlay_process.py` — independent PyObjC subprocess, untouched.
 - `preflight.py` — no changes needed.
-- `install.sh` — no changes needed (pip install handles the new dependency).
+- `install.sh` — pip install handles the new dependency.
 
 ### Panel ↔ Python Communication
 
-pywebview provides a JS bridge. Python exposes functions that JS can call:
+pywebview 5.x uses `js_api=` on `create_window()`. JS calls methods via `window.pywebview.api.*`.
 
 ```
-JS → Python:
+JS → Python (via js_api class):
   send_followup(question: str)  — triggers ai.ask_followup in a thread
-  new_capture()                 — (future: re-trigger overlay from panel)
 
-Python → JS:
-  window.evaluate_js("appendToken('...')")     — streaming tokens
-  window.evaluate_js("newCapture(thumb, dims)") — new capture arrived
-  window.evaluate_js("setStatus('...')")        — status updates
-  window.evaluate_js("clearChat()")             — reset for new capture
+Python → JS (via window.evaluate_js):
+  startStreaming()               — clear placeholder, prepare AI bubble for tokens
+  appendToken(token)             — append a streamed token to current AI bubble
+  endStreaming()                 — remove cursor, re-enable input
+  showError(msg)                 — display error in current AI bubble
+  newCapture(thumb_b64, dims)    — new capture: update thumbnail, clear chat, show "Analyzing..."
+  setStatus(msg)                 — update status text
 ```
+
+### Threading & Window Lifecycle
+
+- `webview.start()` blocks the main thread (like `mainloop()` did).
+- pynput hotkey listener starts on a background thread before `webview.start()`.
+- API calls run in daemon threads, same as before.
+- `evaluate_js()` calls are guarded: a `_loaded` event (set by `window.events.loaded`) prevents calls before the webview is ready. All `evaluate_js()` calls go through a helper that waits on this event.
+- Window show/focus on re-capture: call `window.show()` to bring panel forward.
+- Panel tracks open/closed state via `window.events.closed` callback (replaces `is_open()`).
 
 ### Panel UI Structure (HTML)
 
 ```
 <div id="panel">
-  <header>                    ← drag region
+  <header>                    ← drag region (-webkit-app-region: drag)
     <dot + "ClippyBox">       ← left
     <"⌘⇧E new capture">      ← right
   </header>
@@ -90,29 +100,25 @@ Python → JS:
     <div class="msg ai">     ← AI messages with left accent border
     <div class="msg user">   ← user messages
   </div>
-  <div id="input-area">      ← text input + send button + hints
+  <div id="input-area">      ← textarea + send button + hints
 </div>
 ```
+
+Input uses an HTML `<textarea>` with native `placeholder` attribute. Enter sends, Shift+Enter inserts newline. Input is disabled during streaming (re-enabled by `endStreaming()`).
 
 ### Streaming Flow
 
 1. User draws selection → overlay saves crop → `__main__.py` loads image
-2. `panel.new_capture(image)` called → JS: `clearChat()`, show "Analyzing..." with pulsing dot
+2. Python calls `newCapture(thumb_b64, dims)` → JS clears chat, shows "Analyzing..." with pulsing dot
 3. Background thread calls `ai.explain_capture(image, [], on_token=callback)`
-4. Each token: `window.evaluate_js(f"appendToken({json.dumps(token)})")`
-5. Tokens append directly to the current AI message div
-6. On completion: status clears
+4. First token triggers `startStreaming()` → clears "Analyzing...", creates AI bubble
+5. Each subsequent token: `appendToken(token)` → appends to AI bubble with blinking cursor
+6. On completion: `endStreaming()` → removes cursor, re-enables input, clears status
+7. On error: `showError(msg)` → replaces placeholder with error text
 
-### Input Handling
+### Conversation History
 
-- Enter sends the message (calls `send_followup()` via JS bridge)
-- Shift+Enter inserts a newline
-- Send button (↑ arrow) also triggers send
-- Input disabled while AI is responding
-
-### Threading
-
-Same model as current: API calls run in daemon threads. pywebview's `evaluate_js()` is thread-safe and can be called from any thread — no `root.after()` scheduling needed.
+`panel.py` owns `self.history` (list of message dicts). Reset when `new_capture()` is called. Passed to `ai.explain_capture()` / `ai.ask_followup()` as before.
 
 ## What This Does NOT Change
 
@@ -125,4 +131,8 @@ Same model as current: API calls run in daemon threads. pywebview's `evaluate_js
 
 ## Dependencies Added
 
-- `pywebview>=5.0` — lightweight, well-maintained, supports macOS/Linux/Windows. On macOS it uses WebKit (no Electron, no Chromium download).
+- `pywebview>=5.0` — on macOS uses native WebKit (WKWebView). No Electron, no Chromium download. Requires macOS 10.13+ and Python 3.9+ (project already requires 3.10+).
+
+## Known Risks
+
+- `frameless=True` on macOS Sequoia (15.x) has open pywebview issues around hit-testing. If this surfaces during implementation, fall back to `frameless=True` without `transparent=True` and use a solid background instead of transparency.
