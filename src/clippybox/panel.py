@@ -88,8 +88,8 @@ class ResultPanel:
             return
         try:
             self._window.evaluate_js(js)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[ClippyBox] JS eval failed: {e}")
 
     # -------------------------------------------------------------------
     # Public API
@@ -110,6 +110,7 @@ class ResultPanel:
         w, h = image.size
         model = json.dumps(self._model)
 
+        self._loaded.wait(timeout=10)
         self._window.show()
         self._eval_js(
             f"newCapture({json.dumps(thumb_b64)}, {w}, {h}, {model})"
@@ -128,18 +129,22 @@ class ResultPanel:
     def _on_token(self, token: str) -> None:
         self._eval_js(f"appendToken({json.dumps(token)})")
 
+    def _make_token_callback(self):
+        """Create a token callback that calls startStreaming() on the first token."""
+        started = [False]
+
+        def on_token(token: str) -> None:
+            if not started[0]:
+                started[0] = True
+                self._eval_js("startStreaming()")
+            self._on_token(token)
+
+        return on_token
+
     def _explain(self) -> None:
         try:
-            self._streaming_started = False
-
-            def on_first_token(token: str) -> None:
-                if not self._streaming_started:
-                    self._streaming_started = True
-                    self._eval_js("startStreaming()")
-                self._on_token(token)
-
             response, self.history = ai.explain_capture(
-                self.current_image, [], on_token=on_first_token
+                self.current_image, [], on_token=self._make_token_callback()
             )
         except Exception as e:
             self._eval_js(f"showError({json.dumps(str(e))})")
@@ -148,17 +153,9 @@ class ResultPanel:
 
     def _do_followup(self, question: str) -> None:
         try:
-            self._streaming_started = False
-
-            def on_first_token(token: str) -> None:
-                if not self._streaming_started:
-                    self._streaming_started = True
-                    self._eval_js("startStreaming()")
-                self._on_token(token)
-
             response, self.history = ai.ask_followup(
                 self.current_image, question, self.history,
-                on_token=on_first_token,
+                on_token=self._make_token_callback(),
             )
         except Exception as e:
             self._eval_js(f"showError({json.dumps(str(e))})")
